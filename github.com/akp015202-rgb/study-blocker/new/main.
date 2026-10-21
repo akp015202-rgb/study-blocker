@@ -1,0 +1,284 @@
+import 'dart:async';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+class Home extends StatefulWidget {
+  const Home({super.key});
+  @override
+  State<Home> createState() => _S();
+}
+
+class _S extends State<Home> {
+  static const ch = MethodChannel('blocker');
+  int left = 0;
+  bool on = false;
+  bool adm = false;
+  Timer? t;
+
+  @override
+  void initState() {
+    super.initState();
+    t = Timer.periodic(const Duration(seconds: 1), (_) => tick());
+    tick();
+  }
+
+  @override
+  void dispose() {
+    t?.cancel();
+    super.dispose();
+  }
+
+  Future<void> tick() async {
+    final end = await ch.invokeMethod<int>('endTime') ?? 0;
+    final en = await ch.invokeMethod<bool>('enabled') ?? false;
+    final ad = await ch.invokeMethod<bool>('adminActive') ?? false;
+    if (!mounted) return;
+    setState(() {
+      left = ((end - DateTime.now().millisecondsSinceEpoch) / 1000).ceil().clamp(0, 7200);
+      on = en;
+      adm = ad;
+    });
+  }
+
+  String get fmt {
+    final h = left ~/ 3600, m = (left % 3600) ~/ 60, s = left % 60;
+    return '$h:${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
+  }
+
+  @override
+  Widget build(BuildContext c) {
+    final locked = left > 0;
+    return PopScope(
+      canPop: !locked,
+      child: Scaffold(
+        body: SafeArea(
+          child: Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: locked
+                    ? [
+                        const Text('Focus mode ON', style: TextStyle(fontSize: 22)),
+                        Text(fmt, style: const TextStyle(fontSize: 56, fontWeight: FontWeight.bold)),
+                        const Text('Timer khatam hone tak band nahi hoga'),
+                      ]
+                    : [
+                        if (!on) ...[
+                          const Text('Pehle Accessibility service ON karo'),
+                          ElevatedButton(
+                              onPressed: () => ch.invokeMethod('openSettings'),
+                              child: const Text('Open settings')),
+                        ],
+                        if (on && !adm) ...[
+                          const Text('Uninstall protection OFF'),
+                          ElevatedButton(
+                              onPressed: () => ch.invokeMethod('requestAdmin'),
+                              child: const Text('Protection ON karo')),
+                        ],
+                        if (on)
+                          ElevatedButton(
+                              onPressed: () async {
+                                await ch.invokeMethod('start');
+                                tick();
+                              },
+                              child: const Text('Start 2-hour session')),
+                        const SizedBox(height: 16),
+                        OutlinedButton(
+                            onPressed: () async {
+                              final p = await showTimePicker(
+                                  context: c, initialTime: const TimeOfDay(hour: 18, minute: 0));
+                              if (p != null) await ch.invokeMethod('setSchedule', p.hour * 60 + p.minute);
+                            },
+                            child: const Text('Daily schedule set karo')),
+                      ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+void main() => runApp(MaterialApp(
+    theme: ThemeData.dark(useMaterial3: true), home: const Root(), debugShowCheckedModeBanner: false));
+
+class Root extends StatefulWidget {
+  const Root({super.key});
+  @override
+  State<Root> createState() => _R();
+}
+
+class _R extends State<Root> {
+  bool splash = true;
+  int tab = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    Future.delayed(const Duration(seconds: 2), () {
+      if (mounted) setState(() => splash = false);
+    });
+  }
+
+  @override
+  Widget build(BuildContext c) {
+    if (splash) {
+      return const Scaffold(
+          body: Center(
+              child: Text('ASCEND', style: TextStyle(fontSize: 40, fontWeight: FontWeight.bold, letterSpacing: 6))));
+    }
+    return Scaffold(
+      body: IndexedStack(index: tab, children: const [Home(), TimerTab(), SyllabusTab()]),
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: tab,
+        onDestinationSelected: (i) => setState(() => tab = i),
+        destinations: const [
+          NavigationDestination(icon: Icon(Icons.lock), label: 'Focus'),
+          NavigationDestination(icon: Icon(Icons.timer), label: 'Timer'),
+          NavigationDestination(icon: Icon(Icons.checklist), label: 'Syllabus'),
+        ],
+      ),
+    );
+  }
+}
+
+class TimerTab extends StatefulWidget {
+  const TimerTab({super.key});
+  @override
+  State<TimerTab> createState() => _T();
+}
+
+class _T extends State<TimerTab> {
+  int sec = 0, total = 0;
+  bool run = false;
+  Timer? t;
+  SharedPreferences? sp;
+
+  @override
+  void initState() {
+    super.initState();
+    SharedPreferences.getInstance().then((s) {
+      sp = s;
+      setState(() => total = s.getInt('total') ?? 0);
+    });
+  }
+
+  @override
+  void dispose() {
+    t?.cancel();
+    super.dispose();
+  }
+
+  void toggle() {
+    if (run) {
+      t?.cancel();
+    } else {
+      t = Timer.periodic(const Duration(seconds: 1), (_) => setState(() => sec++));
+    }
+    setState(() => run = !run);
+  }
+
+  void save() {
+    t?.cancel();
+    total += sec;
+    sp?.setInt('total', total);
+    setState(() {
+      sec = 0;
+      run = false;
+    });
+  }
+
+  String f(int s) =>
+      '${s ~/ 3600}:${((s % 3600) ~/ 60).toString().padLeft(2, '0')}:${(s % 60).toString().padLeft(2, '0')}';
+
+  @override
+  Widget build(BuildContext c) => Scaffold(
+        body: SafeArea(
+          child: Center(
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              Text(f(sec), style: const TextStyle(fontSize: 56, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 16),
+              Row(mainAxisSize: MainAxisSize.min, children: [
+                ElevatedButton(onPressed: toggle, child: Text(run ? 'Pause' : 'Start')),
+                const SizedBox(width: 12),
+                OutlinedButton(onPressed: save, child: const Text('Save')),
+              ]),
+              const SizedBox(height: 24),
+              Text('Total padhai: ${f(total)}'),
+            ]),
+          ),
+        ),
+      );
+}
+
+const syl = {
+  'Physics': ['Kinematics', 'Laws of Motion', 'Work Energy Power', 'Rotation', 'Gravitation', 'Thermodynamics', 'Waves', 'Electrostatics', 'Current Electricity', 'Magnetism', 'Optics', 'Modern Physics'],
+  'Chemistry': ['Mole Concept', 'Atomic Structure', 'Chemical Bonding', 'Thermodynamics', 'Equilibrium', 'Electrochemistry', 'Organic Basics', 'Hydrocarbons', 'Coordination Compounds'],
+  'Maths': ['Complex Numbers', 'Quadratics', 'Sequences', 'Permutation Combination', 'Binomial', 'Straight Lines', 'Circles', 'Conics', 'Limits', 'Differentiation', 'Integration', 'Vectors', 'Probability'],
+  'Biology': ['Cell', 'Plant Physiology', 'Human Physiology', 'Genetics', 'Evolution', 'Ecology', 'Reproduction'],
+};
+
+class SyllabusTab extends StatefulWidget {
+  const SyllabusTab({super.key});
+  @override
+  State<SyllabusTab> createState() => _Y();
+}
+
+class _Y extends State<SyllabusTab> {
+  Set<String> done = {};
+  SharedPreferences? sp;
+
+  @override
+  void initState() {
+    super.initState();
+    SharedPreferences.getInstance().then((s) {
+      sp = s;
+      setState(() => done = (s.getStringList('done') ?? []).toSet());
+    });
+  }
+
+  bool d(String s, String c) => done.contains('$s/$c');
+
+  @override
+  Widget build(BuildContext c) {
+    final all = syl.values.fold<int>(0, (a, l) => a + l.length);
+    return Scaffold(
+      body: SafeArea(
+        child: ListView(children: [
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text('Syllabus: ${(done.length * 100 / all).round()}% complete'),
+              const SizedBox(height: 8),
+              LinearProgressIndicator(value: done.length / all),
+            ]),
+          ),
+          for (final e in syl.entries)
+            ExpansionTile(
+              title: Text('${e.key}  ${e.value.where((x) => d(e.key, x)).length}/${e.value.length}'),
+              children: [
+                for (final ch in e.value)
+                  CheckboxListTile(
+                    title: Text(ch),
+                    value: d(e.key, ch),
+                    onChanged: (v) {
+                      setState(() {
+                        if (v == true) {
+                          done.add('${e.key}/$ch');
+                        } else {
+                          done.remove('${e.key}/$ch');
+                        }
+                      });
+                      sp?.setStringList('done', done.toList());
+                    },
+                  ),
+              ],
+            ),
+        ]),
+      ),
+    );
+  }
+}
